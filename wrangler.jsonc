@@ -2,8 +2,5 @@
   // EXIF Cleaner - Cloudflare Pages config
   "name": "exif-cleaner",
   "compatibility_date": "2025-08-27",
-  "pages_build_output_dir": "./dist",
-  "assets": {
-    "directory": "./dist"
-  }
+  "pages_build_output_dir": "./dist"
 }
