@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EXIF Cleaner</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+
+<!-- Open Graph (Facebook, LinkedIn, WhatsApp, etc.) -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="EXIF Cleaner">
+<meta property="og:description" content="Strip EXIF metadata (location, camera info, etc.) from JPEG, PNG, WebP — fully offline, no server.">
+<meta property="og:image" content="favicon.svg">
+<meta property="og:image:width" content="32">
+<meta property="og:image:height" content="32">
+
+<!-- Twitter/X -->
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="EXIF Cleaner">
+<meta name="twitter:description" content="Strip EXIF metadata (location, camera info, etc.) from JPEG, PNG, WebP — fully offline, no server.">
+<meta name="twitter:image" content="favicon.svg">
+
+<!-- Email / iMessage rich preview fallback -->
+<meta name="description" content="Strip EXIF metadata (location, camera info, etc.) from JPEG, PNG, WebP — fully offline, no server.">
+<meta name="theme-color" content="#646cff">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* Dark (default) */
+:root { --bg: #0f0f0f; --surface: #1a1a1a; --text: #e0e0e0; --muted: #888; --border: #444; --border-hover: #646cff; --accent: #646cff; --accent-hover: #535bf2; --bar-bg: #2a2a2a; --overlay: rgba(0,0,0,0.85); }
+/* Light */
+[data-theme="light"] { --bg: #f5f5f5; --surface: #fff; --text: #1a1a1a; --muted: #666; --border: #ccc; --border-hover: #646cff; --accent: #646cff; --accent-hover: #535bf2; --bar-bg: #e0e0e0; --overlay: rgba(0,0,0,0.6); }
+
+body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 2rem; transition: background 0.2s, color 0.2s; }
+.header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 0.5rem; }
+.header-left h1 { font-size: 1.5rem; margin-bottom: 0; }
+.header-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+.icon-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text); width: 36px; height: 36px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.2s, color 0.2s; font-size: 1.1rem; text-decoration: none; }
+.icon-btn:hover { border-color: var(--border-hover); color: var(--accent); }
+p.sub { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.9rem; }
+.drop-zone { border: 2px dashed var(--border); border-radius: 12px; padding: 3rem; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; }
+.drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: var(--surface); }
+.drop-zone span { color: var(--muted); font-size: 1rem; }
+.files { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.file-card { background: var(--surface); border-radius: 8px; padding: 0.75rem 1rem; display: grid; grid-template-columns: 48px 1fr auto auto; align-items: center; gap: 1rem; }
+.file-card img { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; }
+.file-card img:hover { opacity: 0.7; }
+.file-info { overflow: hidden; }
+.file-name { font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-meta { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+.progress-bar { height: 4px; background: var(--bar-bg); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; width: 0%; }
+.file-status { font-size: 0.75rem; white-space: nowrap; }
+.file-status.done { color: #4caf50; }
+.file-status.error { color: #f44336; }
+.file-status.processing { color: var(--accent); }
+.actions { margin-top: 1.5rem; display: flex; gap: 0.75rem; }
+button { padding: 0.6rem 1.5rem; border: none; border-radius: 8px; font-size: 0.9rem; cursor: pointer; transition: opacity 0.2s; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover:not(:disabled) { background: var(--bar-bg); }
+.btn-dl { background: none; border: 1px solid var(--border); color: var(--text); padding: 0.35rem 0.75rem; border-radius: 6px; font-size: 0.75rem; cursor: pointer; transition: border-color 0.2s, color 0.2s; }
+.btn-dl:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-dl:disabled { opacity: 0.3; cursor: not-allowed; }
+.summary { margin-top: 1rem; font-size: 0.85rem; color: var(--muted); }
+
+/* Preview modal */
+.preview-overlay { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 1000; animation: fadeIn 0.15s; }
+.preview-overlay img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: 8px; }
+.preview-close { position: absolute; top: 1rem; right: 1.5rem; background: rgba(255,255,255,0.1); border: none; color: #fff; font-size: 2rem; width: 44px; height: 44px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.2s; }
+.preview-close:hover { background: rgba(255,255,255,0.2); }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-left">
+    <img src="favicon.svg" alt="" style="width:28px;height:28px;vertical-align:middle;margin-right:0.5rem;">
+    <h1 style="display:inline;vertical-align:middle;">EXIF Cleaner</h1>
+  </div>
+  <div class="header-right">
+    <button class="icon-btn" id="themeToggle" title="Toggle theme">&#9790;</button>
+    <a class="icon-btn" href="http://github.com/wendyliga/exif-cleaner" target="_blank" rel="noopener" title="GitHub">
+      <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
+</div>
+<p class="sub">Strip EXIF metadata (location, camera info, etc.) from JPEG, PNG, WebP — fully offline, no server.</p>
+
+<div class="drop-zone" id="dropZone">
+  <span>Drop images here or click to browse</span>
+  <input type="file" id="fileInput" multiple accept="image/jpeg,image/png,image/webp,image/avif" hidden>
+</div>
+
+<div class="files" id="fileList"></div>
+<div class="summary" id="summary"></div>
+<div class="actions" id="actions" style="display:none">
+  <button class="btn-primary" id="btnProcess" disabled>Process All</button>
+  <button class="btn-secondary" id="btnDownload" disabled>Download ZIP</button>
+  <button class="btn-secondary" id="btnClear">Clear</button>
+</div>
+
+<footer style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border);color:var(--muted);font-size:0.8rem;line-height:1.6;">
+  <strong style="color:var(--text)">100% Private &amp; Offline</strong> — Your photos never leave your device. All processing happens entirely in your browser with zero server communication. No uploads, no cloud, no tracking. Works offline.
+</footer>
+
+<script>
+const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
+const EXT_MAP = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/avif': '.avif' };
+const DB_NAME = 'ExifCleanerDB';
+const DB_VERSION = 1;
+const STORE = 'files';
+
+let files = [];
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const fileList = document.getElementById('fileList');
+const summary = document.getElementById('summary');
+const actions = document.getElementById('actions');
+const btnProcess = document.getElementById('btnProcess');
+const btnDownload = document.getElementById('btnDownload');
+const btnClear = document.getElementById('btnClear');
+
+// --- IndexedDB ---
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = e => { e.target.result.createObjectStore(STORE, { keyPath: 'id' }); };
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+async function dbSave(entry) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(entry);
+    tx.oncomplete = () => resolve();
+    tx.onerror = e => reject(e.target.error);
+  });
+}
+
+async function dbGetAll() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+async function dbDelete(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = e => reject(e.target.error);
+  });
+}
+
+async function dbClear() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = e => reject(e.target.error);
+  });
+}
+
+// --- Restore from DB on load ---
+async function restoreFromDB() {
+  const entries = await dbGetAll();
+  for (const entry of entries) {
+    files.push({
+      id: entry.id,
+      file: new File([entry.originalBlob], entry.name, { type: entry.type }),
+      status: entry.status,
+      blob: entry.cleanedBlob || null,
+      originalSize: entry.originalSize,
+      cleanedSize: entry.cleanedSize || 0,
+    });
+  }
+  render();
+}
+
+// --- Events ---
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); addFiles(e.dataTransfer.files); });
+fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
+
+async function addFiles(fileListInput) {
+  const arr = Array.from(fileListInput);
+  for (const f of arr) {
+    if (!SUPPORTED.includes(f.type)) continue;
+    if (files.some(x => x.file.name === f.name && x.file.size === f.size)) continue;
+    const id = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const entry = { id, name: f.name, type: f.type, originalSize: f.size, originalBlob: f, cleanedBlob: null, cleanedSize: 0, status: 'pending' };
+    await dbSave(entry);
+    files.push({ id, file: f, status: 'pending', blob: null, originalSize: f.size, cleanedSize: 0 });
+  }
+  render();
+}
+
+function render() {
+  fileList.innerHTML = '';
+  let totalOrig = 0, totalClean = 0, doneCount = 0;
+
+  files.forEach((item, i) => {
+    totalOrig += item.originalSize;
+    if (item.status === 'done') { totalClean += item.cleanedSize; doneCount++; }
+
+    const card = document.createElement('div');
+    card.className = 'file-card';
+
+    const thumb = document.createElement('img');
+    thumb.src = URL.createObjectURL(item.file);
+    thumb.addEventListener('click', () => showPreview(item));
+
+    const info = document.createElement('div');
+    info.className = 'file-info';
+    info.innerHTML = `
+      <div class="file-name">${item.file.name}</div>
+      <div class="file-meta">${formatSize(item.originalSize)}${item.status === 'done' ? ' → ' + formatSize(item.cleanedSize) + ' (' + Math.round((1 - item.cleanedSize / item.originalSize) * 100) + '% smaller)' : ''}</div>
+      ${item.status === 'processing' ? '<div class="progress-bar"><div class="progress-fill" style="width:50%"></div></div>' : ''}
+      ${item.status === 'done' ? '<div class="progress-bar"><div class="progress-fill" style="width:100%;background:#4caf50"></div></div>' : ''}
+    `;
+
+    const status = document.createElement('div');
+    status.className = 'file-status ' + item.status;
+    status.textContent = item.status === 'pending' ? 'Waiting' : item.status === 'processing' ? 'Processing…' : item.status === 'done' ? 'Done' : 'Error';
+
+    const dlBtn = document.createElement('button');
+    dlBtn.className = 'btn-dl';
+    dlBtn.textContent = 'Download';
+    dlBtn.disabled = item.status !== 'done';
+    dlBtn.addEventListener('click', () => downloadSingle(item));
+
+    card.append(thumb, info, status, dlBtn);
+    fileList.appendChild(card);
+  });
+
+  if (files.length > 0) {
+    actions.style.display = 'flex';
+    btnProcess.disabled = files.every(f => f.status === 'done');
+    btnDownload.disabled = doneCount === 0;
+    if (doneCount > 0) {
+      summary.textContent = `${doneCount}/${files.length} files cleaned — ${formatSize(totalOrig)} → ${formatSize(totalClean)} (${Math.round((1 - totalClean / totalOrig) * 100)}% total reduction)`;
+    } else {
+      summary.textContent = `${files.length} file(s) selected`;
+    }
+  } else {
+    actions.style.display = 'none';
+    summary.textContent = '';
+  }
+}
+
+btnProcess.addEventListener('click', processAll);
+btnDownload.addEventListener('click', downloadZip);
+btnClear.addEventListener('click', async () => { await dbClear(); files = []; render(); });
+
+async function processAll() {
+  btnProcess.disabled = true;
+  const pending = files.filter(f => f.status !== 'done');
+
+  for (let i = 0; i < pending.length; i++) {
+    const item = pending[i];
+    item.status = 'processing';
+    render();
+
+    try {
+      const blob = await stripExif(item.file);
+      item.blob = blob;
+      item.cleanedSize = blob.size;
+      item.status = 'done';
+      await dbSave({ id: item.id, name: item.file.name, type: item.file.type, originalSize: item.originalSize, originalBlob: item.file, cleanedBlob: blob, cleanedSize: blob.size, status: 'done' });
+    } catch (e) {
+      console.error(e);
+      item.status = 'error';
+    }
+    render();
+  }
+}
+
+function stripExif(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      canvas.toBlob(blob => {
+        URL.revokeObjectURL(img.src);
+        if (blob) resolve(blob); else reject(new Error('Canvas toBlob failed'));
+      }, file.type, file.type === 'image/png' ? undefined : 0.92);
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('Image load failed')); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function downloadZip() {
+  const done = files.filter(f => f.status === 'done' && f.blob);
+  if (!done.length) return;
+
+  btnDownload.disabled = true;
+  btnDownload.textContent = 'Creating ZIP…';
+
+  const zip = new JSZip();
+  done.forEach(item => {
+    const name = item.file.name.replace(/\.[^.]+$/, '') + '_cleaned' + EXT_MAP[item.file.type];
+    zip.file(name, item.blob);
+  });
+
+  const content = await zip.generateAsync({ type: 'blob' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(content);
+  a.download = 'cleaned_images.zip';
+  a.click();
+  URL.revokeObjectURL(a.href);
+
+  btnDownload.disabled = false;
+  btnDownload.textContent = 'Download ZIP';
+}
+
+function showPreview(item) {
+  const overlay = document.createElement('div');
+  overlay.className = 'preview-overlay';
+  const img = document.createElement('img');
+  img.src = item.status === 'done' && item.blob ? URL.createObjectURL(item.blob) : URL.createObjectURL(item.file);
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'preview-close';
+  closeBtn.innerHTML = '&times;';
+  const close = () => { URL.revokeObjectURL(img.src); overlay.remove(); };
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', function esc(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); } });
+  overlay.append(img, closeBtn);
+  document.body.appendChild(overlay);
+}
+
+function downloadSingle(item) {
+  if (!item.blob) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(item.blob);
+  a.download = item.file.name.replace(/\.[^.]+$/, '') + '_cleaned' + EXT_MAP[item.file.type];
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+// --- Theme ---
+const themeToggle = document.getElementById('themeToggle');
+function getPreferredTheme() {
+  const saved = localStorage.getItem('theme');
+  if (saved) return saved;
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  themeToggle.innerHTML = theme === 'light' ? '&#9788;' : '&#9790;';
+}
+applyTheme(getPreferredTheme());
+themeToggle.addEventListener('click', () => {
+  const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  localStorage.setItem('theme', next);
+  applyTheme(next);
+});
+
+// Init
+restoreFromDB();
+</script>
+</body>
+</html>
