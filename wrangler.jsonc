@@ -1,0 +1,8 @@
+{
+  // EXIF Cleaner - Cloudflare Pages config
+  "name": "exif-cleaner",
+  "compatibility_date": "2025-08-27",
+  "assets": {
+    "directory": "./dist"
+  }
+}

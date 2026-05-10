@@ -1,5 +1,0 @@
-name = "exif-cleaner"
-pages_build_output_dir = "dist"
-
-[assets]
-directory = "./dist"
