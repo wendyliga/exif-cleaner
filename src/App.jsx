@@ -119,27 +119,33 @@ function cleanedName(file) {
   return `${file.name.replace(/\.[^.]+$/, '')}_cleaned${EXT_MAP[outputTypeForFile(file)] || ''}`
 }
 
-function normalizeHeifResult(result) {
-  if (Array.isArray(result)) return result[0]
-  return result
-}
-
 async function decodeHeifToJpeg(file) {
   const cached = heifPreviewCache.get(file)
   if (cached) return cached
 
-  const promise = import('heic2any')
-    .then((module) =>
-      module.default({
-        blob: file,
-        toType: 'image/jpeg',
-        quality: 0.92,
-      }),
-    )
-    .then((result) => {
-      const blob = normalizeHeifResult(result)
-      if (!blob) throw new Error('HEIF decode failed')
-      return blob
+  const promise = Promise.all([import('heic-decode'), file.arrayBuffer()])
+    .then(async ([module, buffer]) => {
+      const imageData = await module.default({ buffer })
+      const canvas = document.createElement('canvas')
+      canvas.width = imageData.width
+      canvas.height = imageData.height
+      const ctx = canvas.getContext('2d')
+      ctx.putImageData(
+        new ImageData(imageData.data, imageData.width, imageData.height),
+        0,
+        0,
+      )
+
+      return new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob)
+            else reject(new Error('HEIF preview export failed'))
+          },
+          'image/jpeg',
+          0.92,
+        )
+      })
     })
     .catch((error) => {
       heifPreviewCache.delete(file)
