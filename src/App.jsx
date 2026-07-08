@@ -33,6 +33,7 @@ const OUTPUT_TYPE_MAP = {
 const DB_NAME = 'ExifCleanerDB'
 const DB_VERSION = 1
 const STORE = 'files'
+const heifPreviewCache = new WeakMap()
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -109,11 +110,53 @@ function outputTypeForFile(file) {
   return OUTPUT_TYPE_MAP[imageType] || imageType
 }
 
+function isHeifFile(file) {
+  const imageType = imageTypeForFile(file)
+  return imageType === 'image/heif' || imageType === 'image/heic'
+}
+
 function cleanedName(file) {
   return `${file.name.replace(/\.[^.]+$/, '')}_cleaned${EXT_MAP[outputTypeForFile(file)] || ''}`
 }
 
-function stripExif(file) {
+function normalizeHeifResult(result) {
+  if (Array.isArray(result)) return result[0]
+  return result
+}
+
+async function decodeHeifToJpeg(file) {
+  const cached = heifPreviewCache.get(file)
+  if (cached) return cached
+
+  const promise = import('heic2any')
+    .then((module) =>
+      module.default({
+        blob: file,
+        toType: 'image/jpeg',
+        quality: 0.92,
+      }),
+    )
+    .then((result) => {
+      const blob = normalizeHeifResult(result)
+      if (!blob) throw new Error('HEIF decode failed')
+      return blob
+    })
+    .catch((error) => {
+      heifPreviewCache.delete(file)
+      throw error
+    })
+
+  heifPreviewCache.set(file, promise)
+  return promise
+}
+
+async function displayBlobForSource(source) {
+  if (!source || !isHeifFile(source)) return source
+  return decodeHeifToJpeg(source)
+}
+
+async function stripExif(file) {
+  const source = isHeifFile(file) ? await decodeHeifToJpeg(file) : file
   return new Promise((resolve, reject) => {
     const outputType = outputTypeForFile(file)
     const img = new Image()
@@ -137,22 +180,45 @@ function stripExif(file) {
       URL.revokeObjectURL(img.src)
       reject(new Error('Image load failed'))
     }
-    img.src = URL.createObjectURL(file)
+    img.src = URL.createObjectURL(source)
   })
 }
 
-function useObjectUrl(source) {
-  const [url, setUrl] = useState('')
+function useDisplayObjectUrl(source) {
+  const [state, setState] = useState({ url: '', loading: false, error: null })
+
   useEffect(() => {
+    let ignore = false
+    let objectUrl = ''
+
     if (!source) {
-      setUrl('')
+      setState({ url: '', loading: false, error: null })
       return undefined
     }
-    const objectUrl = URL.createObjectURL(source)
-    setUrl(objectUrl)
-    return () => URL.revokeObjectURL(objectUrl)
+
+    setState({ url: '', loading: isHeifFile(source), error: null })
+    displayBlobForSource(source)
+      .then((blob) => {
+        if (ignore) return
+        objectUrl = URL.createObjectURL(blob)
+        setState({ url: objectUrl, loading: false, error: null })
+      })
+      .catch((error) => {
+        if (ignore) return
+        setState({
+          url: '',
+          loading: false,
+          error: error?.message || 'Preview failed',
+        })
+      })
+
+    return () => {
+      ignore = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
   }, [source])
-  return url
+
+  return state
 }
 
 function useExif(file, cacheRef, id) {
@@ -271,7 +337,9 @@ function ExifPanel({ item, cacheRef }) {
 }
 
 function Thumb({ file, active, onClick, onRemove }) {
-  const url = useObjectUrl(file)
+  const { url, loading, error } = useDisplayObjectUrl(file)
+  const placeholder = error ? '!' : isHeifFile(file) && loading ? 'HEIF' : loading ? '...' : ''
+
   return (
     <div className={`thumb-item ${active ? 'active' : ''}`}>
       <button
@@ -281,7 +349,9 @@ function Thumb({ file, active, onClick, onRemove }) {
         aria-label={file.name}
         aria-current={active ? 'true' : undefined}
       >
-        {url ? <img src={url} alt="" /> : null}
+        {url ? <img src={url} alt="" /> : (
+          <span className="thumb-placeholder">{placeholder}</span>
+        )}
       </button>
       <button
         className="thumb-remove"
@@ -300,7 +370,7 @@ function Thumb({ file, active, onClick, onRemove }) {
 }
 
 function PreviewOverlay({ source, onClose }) {
-  const url = useObjectUrl(source)
+  const { url, loading, error } = useDisplayObjectUrl(source)
 
   useEffect(() => {
     function onKeyDown(event) {
@@ -312,12 +382,18 @@ function PreviewOverlay({ source, onClose }) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <img
-        className="preview-img"
-        src={url}
-        alt=""
-        onClick={(event) => event.stopPropagation()}
-      />
+      {url ? (
+        <img
+          className="preview-img"
+          src={url}
+          alt=""
+          onClick={(event) => event.stopPropagation()}
+        />
+      ) : (
+        <div className="preview-empty" onClick={(event) => event.stopPropagation()}>
+          {loading ? 'Preparing preview...' : error || 'Preview unavailable'}
+        </div>
+      )}
       <button
         className="modal-close"
         type="button"
@@ -438,6 +514,12 @@ function App() {
           originalSize: file.size,
           cleanedSize: 0,
         })
+
+        if (isHeifFile(file)) {
+          decodeHeifToJpeg(file).catch((error) => {
+            console.warn('HEIF preview failed', error)
+          })
+        }
       }
 
       if (!nextItems.length) return
@@ -453,7 +535,7 @@ function App() {
         const merged = [...current, ...freshItems]
         return merged
       })
-      setActiveId((current) => current || nextItems[0].id)
+      setActiveId(nextItems[0].id)
     },
     [files],
   )
@@ -620,7 +702,11 @@ function App() {
 
   const activePreviewSource =
     activeItem?.status === 'done' && activeItem.blob ? activeItem.blob : activeItem?.file
-  const activeUrl = useObjectUrl(activePreviewSource || null)
+  const {
+    url: activeUrl,
+    loading: activePreviewLoading,
+    error: activePreviewError,
+  } = useDisplayObjectUrl(activePreviewSource || null)
 
   const activeReduction =
     activeItem?.status === 'done' && activeItem.originalSize > 0
@@ -740,6 +826,14 @@ function App() {
                     alt=""
                     onClick={() => setPreviewSource(activePreviewSource)}
                   />
+                ) : activeItem ? (
+                  <div className="preview-empty">
+                    {activePreviewLoading && isHeifFile(activePreviewSource)
+                      ? 'Preparing HEIF preview...'
+                      : activePreviewLoading
+                        ? 'Preparing preview...'
+                        : activePreviewError || 'Preview unavailable'}
+                  </div>
                 ) : null}
 
                 {activeItem ? (
