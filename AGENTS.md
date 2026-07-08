@@ -18,7 +18,7 @@ Static React + Vite web app that strips EXIF metadata (GPS, camera info, timesta
 
 **How EXIF stripping works**: Images are drawn onto an offscreen `<canvas>` then re-exported via `canvas.toBlob()`. Canvas does not preserve EXIF metadata, so the output is clean. This is lossy (re-encoded) but simple and works for all canvas-supported formats.
 
-**Supported formats**: JPEG, PNG, WebP, AVIF (limited to what the browser's Canvas API can decode/encode).
+**Supported formats**: JPEG, PNG, WebP, AVIF, HEIF/HEIC (limited to what the browser's Canvas API can decode/encode; HEIF/HEIC exports as JPEG).
 
 ## Build & Commands
 
@@ -94,7 +94,7 @@ Object store `files`, keyPath: `id`
 ## Known Gotchas
 
 - **FileList is live**: Must `Array.from(fileListInput)` before any `await` in `addFiles()`, otherwise `fileInput.value = ''` empties the list mid-iteration.
-- **Canvas re-encoding is lossy**: JPEG quality is set to 0.92, PNG is lossless. Original pixel data is not preserved bit-for-bit for JPEG/WebP.
+- **Canvas re-encoding is lossy**: JPEG quality is set to 0.92, PNG is lossless. Original pixel data is not preserved bit-for-bit for JPEG/WebP/HEIF.
 - **IndexedDB is per-origin**: Dev server, preview server, file URL, and production URL each get separate IndexedDB storage.
-- **AVIF support varies**: Canvas encode/decode for AVIF depends on browser support. Will fail or fall back in unsupported browsers.
+- **AVIF and HEIF support varies**: Canvas encode/decode for AVIF and HEIF decode depend on browser support. HEIF/HEIC outputs clean JPEG files because browser canvas HEIF encoding is not reliable.
 - **Build hash**: Local builds without git metadata show `Build development`; normal git builds show the short commit hash.

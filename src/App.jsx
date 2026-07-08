@@ -3,12 +3,32 @@ import JSZip from 'jszip'
 import { buildHref, buildVersion, githubRepoUrl } from './core/buildInfo'
 import { groupExif, hasAnyExif, readExif } from './core/exif'
 
-const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/avif']
+const SUPPORTED = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/avif',
+  'image/heif',
+  'image/heic',
+]
 const EXT_MAP = {
   'image/jpeg': '.jpg',
   'image/png': '.png',
   'image/webp': '.webp',
   'image/avif': '.avif',
+}
+const TYPE_BY_EXTENSION = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  heif: 'image/heif',
+  heic: 'image/heic',
+}
+const OUTPUT_TYPE_MAP = {
+  'image/heif': 'image/jpeg',
+  'image/heic': 'image/jpeg',
 }
 const DB_NAME = 'ExifCleanerDB'
 const DB_VERSION = 1
@@ -74,12 +94,28 @@ function formatSize(bytes) {
   return `${(bytes / 1048576).toFixed(1)} MB`
 }
 
+function getFileExtension(name) {
+  const match = /\.([^.]+)$/.exec(name)
+  return match ? match[1].toLowerCase() : ''
+}
+
+function imageTypeForFile(file) {
+  if (SUPPORTED.includes(file.type)) return file.type
+  return TYPE_BY_EXTENSION[getFileExtension(file.name)] || ''
+}
+
+function outputTypeForFile(file) {
+  const imageType = imageTypeForFile(file)
+  return OUTPUT_TYPE_MAP[imageType] || imageType
+}
+
 function cleanedName(file) {
-  return `${file.name.replace(/\.[^.]+$/, '')}_cleaned${EXT_MAP[file.type] || ''}`
+  return `${file.name.replace(/\.[^.]+$/, '')}_cleaned${EXT_MAP[outputTypeForFile(file)] || ''}`
 }
 
 function stripExif(file) {
   return new Promise((resolve, reject) => {
+    const outputType = outputTypeForFile(file)
     const img = new Image()
     img.onload = () => {
       const canvas = document.createElement('canvas')
@@ -93,8 +129,8 @@ function stripExif(file) {
           if (blob) resolve(blob)
           else reject(new Error('Canvas toBlob failed'))
         },
-        file.type,
-        file.type === 'image/png' ? undefined : 0.92,
+        outputType,
+        outputType === 'image/png' ? undefined : 0.92,
       )
     }
     img.onerror = () => {
@@ -375,7 +411,8 @@ function App() {
       const seen = new Set(files.map((item) => `${item.file.name}:${item.file.size}`))
 
       for (const file of arr) {
-        if (!SUPPORTED.includes(file.type)) continue
+        const imageType = imageTypeForFile(file)
+        if (!imageType) continue
         const key = `${file.name}:${file.size}`
         if (seen.has(key)) continue
         seen.add(key)
@@ -384,7 +421,7 @@ function App() {
         const entry = {
           id,
           name: file.name,
-          type: file.type,
+          type: file.type || imageType,
           originalSize: file.size,
           originalBlob: file,
           cleanedBlob: null,
@@ -425,7 +462,7 @@ function App() {
     await dbSave({
       id: item.id,
       name: item.file.name,
-      type: item.file.type,
+      type: imageTypeForFile(item.file) || item.file.type,
       originalSize: item.originalSize,
       originalBlob: item.file,
       cleanedBlob: blob,
@@ -653,7 +690,7 @@ function App() {
               </svg>
             </div>
             <div className="drop-title">Drop images here or click to browse</div>
-            <div className="drop-sub">JPEG · PNG · WebP · AVIF</div>
+            <div className="drop-sub">JPEG · PNG · WebP · AVIF · HEIF/HEIC</div>
           </section>
         ) : (
           <section className={`workspace ${isDragging ? 'drag-over' : ''}`}>
@@ -855,7 +892,7 @@ function App() {
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/jpeg,image/png,image/webp,image/avif"
+          accept="image/jpeg,image/png,image/webp,image/avif,image/heif,image/heic,.heif,.heic"
           hidden
           onChange={(event) => {
             addFiles(event.target.files)

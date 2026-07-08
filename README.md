@@ -12,12 +12,12 @@ Strip EXIF metadata (location, camera info, timestamps, etc.) from images fully 
 - **Download options** - Download individually or all at once as ZIP
 - **Persistent** - Files and results survive page refresh with IndexedDB
 - **Dark/Light mode** - Follows your system preference, toggle manually, saved between sessions
-- **Supported formats** - JPEG, PNG, WebP, AVIF
+- **Supported formats** - JPEG, PNG, WebP, AVIF, HEIF/HEIC
 - **Build hash footer** - Production builds show `Build <hash>` linked to the GitHub commit when available
 
 ## How It Works
 
-Images are redrawn through the Canvas API, which does not carry over EXIF metadata. The output is a clean image with all metadata stripped.
+Images are redrawn through the Canvas API, which does not carry over EXIF metadata. The output is a clean image with all metadata stripped. HEIF/HEIC files are exported as JPEG because browsers do not reliably encode HEIF from canvas.
 
 ## Development
 
