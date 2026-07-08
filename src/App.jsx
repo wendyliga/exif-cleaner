@@ -576,8 +576,9 @@ function App() {
   }, [])
 
   const hasFiles = files.length > 0
-  const allDone = hasFiles && files.every((item) => item.status === 'done')
-  const canProcessBatch = hasFiles && !allDone && !isProcessing
+  const pendingCount = files.filter((item) => item.status !== 'done').length
+  const allDone = hasFiles && pendingCount === 0
+  const canProcessBatch = pendingCount > 0 && !isProcessing
   const canDownloadZip = stats.doneCount > 0 && !isZipping
 
   const activePreviewSource =
@@ -793,30 +794,55 @@ function App() {
               </div>
 
               <div className="preview-actions">
-                <button
-                  className="btn-primary"
-                  type="button"
-                  disabled={
-                    !activeItem ||
-                    activeItem.status === 'done' ||
-                    activeItem.status === 'processing' ||
-                    processingId != null
-                  }
-                  onClick={() => activeItem && processOne(activeItem.id)}
-                >
-                  {activeItem?.status === 'processing'
-                    ? 'Processing...'
-                    : activeItem?.status === 'done'
-                      ? 'Cleaned'
-                      : 'Process'}
-                </button>
-                <button
-                  className="btn-secondary"
-                  type="button"
-                  disabled={!activeItem || activeItem.status !== 'done'}
-                  onClick={() => downloadSingle(activeItem)}
-                >
-                  Download
+                <div className="action-group">
+                  <button
+                    className="btn-primary"
+                    type="button"
+                    disabled={
+                      !activeItem ||
+                      activeItem.status === 'done' ||
+                      activeItem.status === 'processing' ||
+                      processingId != null
+                    }
+                    onClick={() => activeItem && processOne(activeItem.id)}
+                  >
+                    {activeItem?.status === 'processing'
+                      ? 'Processing...'
+                      : activeItem?.status === 'done'
+                        ? 'Cleaned'
+                        : 'Process'}
+                  </button>
+                  <button
+                    className="btn-primary-soft"
+                    type="button"
+                    disabled={!canProcessBatch}
+                    onClick={processAll}
+                    title="Process every pending image"
+                  >
+                    {isProcessing ? 'Processing…' : `Process all (${pendingCount})`}
+                  </button>
+                </div>
+                <div className="action-group">
+                  <button
+                    className="btn-secondary"
+                    type="button"
+                    disabled={!activeItem || activeItem.status !== 'done'}
+                    onClick={() => downloadSingle(activeItem)}
+                  >
+                    Download
+                  </button>
+                  <button
+                    className="btn-secondary-soft"
+                    type="button"
+                    disabled={!canDownloadZip}
+                    onClick={downloadZip}
+                    title="Download every cleaned image as ZIP"
+                  >
+                    {isZipping ? 'Zipping…' : `Download ZIP (${stats.doneCount})`}
+                  </button>
+                </div>
+                <button className="btn-link" type="button" onClick={clearAll}>
+                  Clear all
                 </button>
               </div>
             </div>
@@ -848,32 +874,6 @@ function App() {
           </a>
         </footer>
       </main>
-
-      {hasFiles ? (
-        <div className="action-bar" role="toolbar" aria-label="Batch actions">
-          <div className="action-bar-inner">
-            <button
-              className="btn-primary"
-              type="button"
-              disabled={!canProcessBatch}
-              onClick={processAll}
-            >
-              {isProcessing ? 'Processing...' : allDone ? 'All Cleaned' : 'Process All'}
-            </button>
-            <button
-              className="btn-secondary"
-              type="button"
-              disabled={!canDownloadZip}
-              onClick={downloadZip}
-            >
-              {isZipping ? 'Creating ZIP...' : 'Download ZIP'}
-            </button>
-            <button className="btn-ghost" type="button" onClick={clearAll}>
-              Clear all
-            </button>
-          </div>
-        </div>
-      ) : null}
 
       {previewSource ? (
         <PreviewOverlay source={previewSource} onClose={() => setPreviewSource(null)} />
