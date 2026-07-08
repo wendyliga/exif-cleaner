@@ -125,7 +125,8 @@ async function decodeHeifToJpeg(file) {
 
   const promise = Promise.all([import('heic-decode'), file.arrayBuffer()])
     .then(async ([module, buffer]) => {
-      const imageData = await module.default({ buffer })
+      const bytes = new Uint8Array(buffer)
+      const imageData = await module.default({ buffer: bytes })
       const canvas = document.createElement('canvas')
       canvas.width = imageData.width
       canvas.height = imageData.height
