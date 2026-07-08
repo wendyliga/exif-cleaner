@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import { buildHref, buildVersion, githubRepoUrl } from './core/buildInfo'
+import { groupExif, hasAnyExif, readExif } from './core/exif'
 
 const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/avif']
 const EXT_MAP = {
@@ -44,6 +45,16 @@ async function dbGetAll() {
     const req = tx.objectStore(STORE).getAll()
     req.onsuccess = () => resolve(req.result)
     req.onerror = (event) => reject(event.target.error)
+  })
+}
+
+async function dbDelete(id) {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.objectStore(STORE).delete(id)
+    tx.oncomplete = () => resolve()
+    tx.onerror = (event) => reject(event.target.error)
   })
 }
 
@@ -94,27 +105,166 @@ function stripExif(file) {
   })
 }
 
-function Thumb({ item, onClick }) {
+function useObjectUrl(source) {
   const [url, setUrl] = useState('')
-
   useEffect(() => {
-    const objectUrl = URL.createObjectURL(item.file)
-    setUrl(objectUrl)
-    return () => URL.revokeObjectURL(objectUrl)
-  }, [item.file])
-
-  return <img src={url} alt="" onClick={onClick} />
-}
-
-function Preview({ item, onClose }) {
-  const [url, setUrl] = useState('')
-
-  useEffect(() => {
-    const source = item.status === 'done' && item.blob ? item.blob : item.file
+    if (!source) {
+      setUrl('')
+      return undefined
+    }
     const objectUrl = URL.createObjectURL(source)
     setUrl(objectUrl)
     return () => URL.revokeObjectURL(objectUrl)
-  }, [item])
+  }, [source])
+  return url
+}
+
+function useExif(file, cacheRef, id) {
+  const [state, setState] = useState({ loading: true, raw: null, error: null })
+
+  useEffect(() => {
+    if (!file || !id) {
+      setState({ loading: false, raw: null, error: null })
+      return undefined
+    }
+    const cached = cacheRef.current.get(id)
+    if (cached) {
+      setState({ loading: false, raw: cached, error: null })
+      return undefined
+    }
+    let ignore = false
+    setState({ loading: true, raw: null, error: null })
+    readExif(file)
+      .then((raw) => {
+        if (ignore) return
+        cacheRef.current.set(id, raw)
+        setState({ loading: false, raw, error: null })
+      })
+      .catch((error) => {
+        if (ignore) return
+        setState({ loading: false, raw: null, error: error?.message || 'Read failed' })
+      })
+    return () => {
+      ignore = true
+    }
+  }, [file, id, cacheRef])
+
+  return state
+}
+
+function statusLabel(status) {
+  if (status === 'pending') return 'Waiting'
+  if (status === 'processing') return 'Processing'
+  if (status === 'done') return 'Cleaned'
+  if (status === 'error') return 'Error'
+  return status
+}
+
+function StatusPill({ status }) {
+  return (
+    <span className={`status-pill status-${status}`}>
+      <span className="status-dot" />
+      {statusLabel(status)}
+    </span>
+  )
+}
+
+function ExifPanel({ item, cacheRef }) {
+  const { loading, raw, error } = useExif(item?.file, cacheRef, item?.id)
+  const grouped = useMemo(() => groupExif(raw), [raw])
+  const rawHasSomething = hasAnyExif(raw)
+
+  if (!item) {
+    return (
+      <div className="exif-panel empty">
+        <div className="exif-empty">Select an image to view metadata.</div>
+      </div>
+    )
+  }
+
+  const isEmptyState = !loading && (error || grouped.totalCount === 0)
+
+  return (
+    <aside className="exif-panel">
+      <header className="exif-panel-head">
+        <div className="exif-panel-eyebrow">Metadata</div>
+        <div className="exif-panel-title" title={item.file.name}>
+          {item.file.name}
+        </div>
+      </header>
+
+      <div className={`exif-panel-body ${isEmptyState || loading ? 'centered' : ''}`}>
+        {loading ? (
+          <div className="exif-empty">Reading metadata...</div>
+        ) : error ? (
+          <div className="exif-empty error">Could not read metadata: {error}</div>
+        ) : grouped.totalCount === 0 ? (
+          <div className="exif-empty">
+            {rawHasSomething
+              ? 'No recognizable EXIF fields found.'
+              : 'No EXIF metadata. Nothing to strip.'}
+          </div>
+        ) : (
+          <>
+            <div className="exif-summary">
+              <span className="exif-count">{grouped.totalCount} fields</span>
+              {grouped.hasGps ? (
+                <span className="exif-warning">Location data present</span>
+              ) : null}
+            </div>
+            <div className="exif-groups">
+              {grouped.groups.map((group) => (
+                <section key={group.id} className="exif-group">
+                  <h3>{group.label}</h3>
+                  <dl>
+                    {group.entries.map((entry) => (
+                      <div key={entry.key} className="exif-row">
+                        <dt>{entry.label}</dt>
+                        <dd>{entry.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </aside>
+  )
+}
+
+function Thumb({ file, active, onClick, onRemove }) {
+  const url = useObjectUrl(file)
+  return (
+    <div className={`thumb-item ${active ? 'active' : ''}`}>
+      <button
+        className="thumb-select"
+        type="button"
+        onClick={onClick}
+        aria-label={file.name}
+        aria-current={active ? 'true' : undefined}
+      >
+        {url ? <img src={url} alt="" /> : null}
+      </button>
+      <button
+        className="thumb-remove"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          onRemove()
+        }}
+        aria-label={`Remove ${file.name}`}
+        title="Remove"
+      >
+        ×
+      </button>
+    </div>
+  )
+}
+
+function PreviewOverlay({ source, onClose }) {
+  const url = useObjectUrl(source)
 
   useEffect(() => {
     function onKeyDown(event) {
@@ -125,9 +275,19 @@ function Preview({ item, onClose }) {
   }, [onClose])
 
   return (
-    <div className="preview-overlay" onClick={onClose}>
-      <img src={url} alt="" onClick={(event) => event.stopPropagation()} />
-      <button className="preview-close" type="button" onClick={onClose} aria-label="Close preview">
+    <div className="modal-overlay" onClick={onClose}>
+      <img
+        className="preview-img"
+        src={url}
+        alt=""
+        onClick={(event) => event.stopPropagation()}
+      />
+      <button
+        className="modal-close"
+        type="button"
+        onClick={onClose}
+        aria-label="Close preview"
+      >
         &times;
       </button>
     </div>
@@ -136,14 +296,19 @@ function Preview({ item, onClose }) {
 
 function App() {
   const [files, setFiles] = useState([])
+  const [activeId, setActiveId] = useState(null)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [processingId, setProcessingId] = useState(null)
   const [isZipping, setIsZipping] = useState(false)
-  const [previewItem, setPreviewItem] = useState(null)
+  const [previewSource, setPreviewSource] = useState(null)
+  const [isDragging, setIsDragging] = useState(false)
   const [theme, setTheme] = useState(() => {
     const current = document.documentElement.dataset.theme
     return current === 'light' || current === 'dark' ? current : 'dark'
   })
   const fileInputRef = useRef(null)
+  const dragCounter = useRef(0)
+  const exifCacheRef = useRef(new Map())
 
   useEffect(() => {
     let ignore = false
@@ -152,16 +317,16 @@ function App() {
       const entries = await dbGetAll()
       if (ignore) return
 
-      setFiles(
-        entries.map((entry) => ({
-          id: entry.id,
-          file: new File([entry.originalBlob], entry.name, { type: entry.type }),
-          status: entry.status,
-          blob: entry.cleanedBlob || null,
-          originalSize: entry.originalSize,
-          cleanedSize: entry.cleanedSize || 0,
-        })),
-      )
+      const restored = entries.map((entry) => ({
+        id: entry.id,
+        file: new File([entry.originalBlob], entry.name, { type: entry.type }),
+        status: entry.status,
+        blob: entry.cleanedBlob || null,
+        originalSize: entry.originalSize,
+        cleanedSize: entry.cleanedSize || 0,
+      }))
+      setFiles(restored)
+      if (restored.length > 0) setActiveId(restored[0].id)
     }
 
     restoreFromDB().catch(console.error)
@@ -175,87 +340,106 @@ function App() {
     localStorage.setItem('theme', theme)
   }, [theme])
 
+  const activeIndex = useMemo(
+    () => files.findIndex((item) => item.id === activeId),
+    [files, activeId],
+  )
+  const activeItem = activeIndex >= 0 ? files[activeIndex] : null
+
   const stats = useMemo(() => {
     let totalOrig = 0
+    let totalOrigDone = 0
     let totalClean = 0
     let doneCount = 0
 
     for (const item of files) {
       totalOrig += item.originalSize
       if (item.status === 'done') {
+        totalOrigDone += item.originalSize
         totalClean += item.cleanedSize
         doneCount += 1
       }
     }
-
-    return { totalOrig, totalClean, doneCount }
+    return { totalOrig, totalOrigDone, totalClean, doneCount }
   }, [files])
 
-  const summary = useMemo(() => {
-    if (!files.length) return ''
-    if (!stats.doneCount) return `${files.length} file(s) selected`
+  const reduction = useMemo(() => {
+    if (!stats.doneCount || stats.totalOrigDone <= 0) return 0
+    return Math.round((1 - stats.totalClean / stats.totalOrigDone) * 100)
+  }, [stats])
 
-    const reduction =
-      stats.totalOrig > 0 ? Math.round((1 - stats.totalClean / stats.totalOrig) * 100) : 0
-    return `${stats.doneCount}/${files.length} files cleaned - ${formatSize(
-      stats.totalOrig,
-    )} -> ${formatSize(stats.totalClean)} (${reduction}% total reduction)`
-  }, [files.length, stats])
+  const addFiles = useCallback(
+    async (fileListInput) => {
+      const arr = Array.from(fileListInput)
+      const nextItems = []
+      const seen = new Set(files.map((item) => `${item.file.name}:${item.file.size}`))
 
-  async function addFiles(fileListInput) {
-    const arr = Array.from(fileListInput)
-    const nextItems = []
-    const seen = new Set(files.map((item) => `${item.file.name}:${item.file.size}`))
+      for (const file of arr) {
+        if (!SUPPORTED.includes(file.type)) continue
+        const key = `${file.name}:${file.size}`
+        if (seen.has(key)) continue
+        seen.add(key)
 
-    for (const file of arr) {
-      if (!SUPPORTED.includes(file.type)) continue
-      const key = `${file.name}:${file.size}`
-      if (seen.has(key)) continue
-      seen.add(key)
+        const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        const entry = {
+          id,
+          name: file.name,
+          type: file.type,
+          originalSize: file.size,
+          originalBlob: file,
+          cleanedBlob: null,
+          cleanedSize: 0,
+          status: 'pending',
+        }
 
-      const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-      const entry = {
-        id,
-        name: file.name,
-        type: file.type,
-        originalSize: file.size,
-        originalBlob: file,
-        cleanedBlob: null,
-        cleanedSize: 0,
-        status: 'pending',
+        await dbSave(entry)
+        nextItems.push({
+          id,
+          file,
+          status: 'pending',
+          blob: null,
+          originalSize: file.size,
+          cleanedSize: 0,
+        })
       }
 
-      await dbSave(entry)
-      nextItems.push({
-        id,
-        file,
-        status: 'pending',
-        blob: null,
-        originalSize: file.size,
-        cleanedSize: 0,
+      if (!nextItems.length) return
+
+      setFiles((current) => {
+        const freshItems = nextItems.filter(
+          (item) =>
+            !current.some(
+              (existing) =>
+                existing.file.name === item.file.name && existing.file.size === item.file.size,
+            ),
+        )
+        const merged = [...current, ...freshItems]
+        return merged
       })
-    }
+      setActiveId((current) => current || nextItems[0].id)
+    },
+    [files],
+  )
 
-    setFiles((current) => {
-      const freshItems = nextItems.filter(
-        (item) =>
-          !current.some(
-            (existing) =>
-              existing.file.name === item.file.name && existing.file.size === item.file.size,
-          ),
-      )
-      return [...current, ...freshItems]
+  const persistProcessed = useCallback(async (item, blob) => {
+    await dbSave({
+      id: item.id,
+      name: item.file.name,
+      type: item.file.type,
+      originalSize: item.originalSize,
+      originalBlob: item.file,
+      cleanedBlob: blob,
+      cleanedSize: blob.size,
+      status: 'done',
     })
-  }
+  }, [])
 
-  async function processAll() {
-    setIsProcessing(true)
-
-    const pendingIds = files.filter((item) => item.status !== 'done').map((item) => item.id)
-    for (const id of pendingIds) {
+  const processOne = useCallback(
+    async (id) => {
       const item = files.find((candidate) => candidate.id === id)
-      if (!item) continue
+      if (!item || item.status === 'done') return
 
+      setProcessingId(id)
       setFiles((current) =>
         current.map((candidate) =>
           candidate.id === id ? { ...candidate, status: 'processing' } : candidate,
@@ -264,24 +448,13 @@ function App() {
 
       try {
         const blob = await stripExif(item.file)
-        const nextItem = {
-          ...item,
-          blob,
-          cleanedSize: blob.size,
-          status: 'done',
-        }
-        await dbSave({
-          id: item.id,
-          name: item.file.name,
-          type: item.file.type,
-          originalSize: item.originalSize,
-          originalBlob: item.file,
-          cleanedBlob: blob,
-          cleanedSize: blob.size,
-          status: 'done',
-        })
+        await persistProcessed(item, blob)
         setFiles((current) =>
-          current.map((candidate) => (candidate.id === id ? nextItem : candidate)),
+          current.map((candidate) =>
+            candidate.id === id
+              ? { ...candidate, blob, cleanedSize: blob.size, status: 'done' }
+              : candidate,
+          ),
         )
       } catch (error) {
         console.error(error)
@@ -290,49 +463,144 @@ function App() {
             candidate.id === id ? { ...candidate, status: 'error' } : candidate,
           ),
         )
+      } finally {
+        setProcessingId(null)
       }
-    }
+    },
+    [files, persistProcessed],
+  )
 
+  async function processAll() {
+    setIsProcessing(true)
+    const pendingIds = files.filter((item) => item.status !== 'done').map((item) => item.id)
+    for (const id of pendingIds) {
+      await processOne(id)
+    }
     setIsProcessing(false)
   }
 
   async function downloadZip() {
     const done = files.filter((item) => item.status === 'done' && item.blob)
     if (!done.length) return
-
     setIsZipping(true)
     const zip = new JSZip()
     done.forEach((item) => {
       zip.file(cleanedName(item.file), item.blob)
     })
-
     const content = await zip.generateAsync({ type: 'blob' })
     downloadBlob(content, 'cleaned_images.zip')
     setIsZipping(false)
   }
 
   function downloadSingle(item) {
-    if (!item.blob) return
+    if (!item?.blob) return
     downloadBlob(item.blob, cleanedName(item.file))
+  }
+
+  async function removeItem(id) {
+    await dbDelete(id)
+    exifCacheRef.current.delete(id)
+    setFiles((current) => {
+      const next = current.filter((item) => item.id !== id)
+      setActiveId((currentActive) => {
+        if (currentActive !== id) return currentActive
+        if (!next.length) return null
+        const removedIndex = current.findIndex((item) => item.id === id)
+        const fallback = next[Math.min(removedIndex, next.length - 1)]
+        return fallback?.id ?? null
+      })
+      return next
+    })
   }
 
   async function clearAll() {
     await dbClear()
+    exifCacheRef.current.clear()
     setFiles([])
+    setActiveId(null)
+    setPreviewSource(null)
   }
 
+  const goPrev = useCallback(() => {
+    if (activeIndex <= 0) return
+    setActiveId(files[activeIndex - 1].id)
+  }, [activeIndex, files])
+
+  const goNext = useCallback(() => {
+    if (activeIndex < 0 || activeIndex >= files.length - 1) return
+    setActiveId(files[activeIndex + 1].id)
+  }, [activeIndex, files])
+
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (previewSource) return
+      const target = event.target
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        goPrev()
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        goNext()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [goPrev, goNext, previewSource])
+
+  useEffect(() => {
+    function onWindowDragEnter(event) {
+      if (!event.dataTransfer?.types?.includes('Files')) return
+      dragCounter.current += 1
+      setIsDragging(true)
+    }
+    function onWindowDragLeave() {
+      dragCounter.current = Math.max(0, dragCounter.current - 1)
+      if (dragCounter.current === 0) setIsDragging(false)
+    }
+    function onWindowDrop() {
+      dragCounter.current = 0
+      setIsDragging(false)
+    }
+    window.addEventListener('dragenter', onWindowDragEnter)
+    window.addEventListener('dragleave', onWindowDragLeave)
+    window.addEventListener('drop', onWindowDrop)
+    return () => {
+      window.removeEventListener('dragenter', onWindowDragEnter)
+      window.removeEventListener('dragleave', onWindowDragLeave)
+      window.removeEventListener('drop', onWindowDrop)
+    }
+  }, [])
+
   const hasFiles = files.length > 0
-  const allDone = files.every((item) => item.status === 'done')
-  const canProcess = hasFiles && !allDone && !isProcessing
-  const canDownload = stats.doneCount > 0 && !isZipping
+  const allDone = hasFiles && files.every((item) => item.status === 'done')
+  const canProcessBatch = hasFiles && !allDone && !isProcessing
+  const canDownloadZip = stats.doneCount > 0 && !isZipping
+
+  const activePreviewSource =
+    activeItem?.status === 'done' && activeItem.blob ? activeItem.blob : activeItem?.file
+  const activeUrl = useObjectUrl(activePreviewSource || null)
+
+  const activeReduction =
+    activeItem?.status === 'done' && activeItem.originalSize > 0
+      ? Math.round((1 - activeItem.cleanedSize / activeItem.originalSize) * 100)
+      : 0
+  const activeGrew = activeReduction < 0
 
   return (
     <>
+      <div className="bg-glow" aria-hidden="true" />
       <main className="app-shell">
         <header className="header">
           <div className="header-left">
             <img className="logo" src="./favicon.svg" alt="" />
-            <h1>EXIF Cleaner</h1>
+            <div>
+              <h1>EXIF Cleaner</h1>
+              <p className="tagline">Inspect and strip metadata, entirely in your browser.</p>
+            </div>
           </div>
           <div className="header-right">
             <button
@@ -340,8 +608,9 @@ function App() {
               type="button"
               title="Toggle theme"
               onClick={() => setTheme((current) => (current === 'light' ? 'dark' : 'light'))}
+              aria-label="Toggle theme"
             >
-              {theme === 'light' ? '\u2600' : '\u263E'}
+              {theme === 'light' ? '☀' : '☾'}
             </button>
             <a
               className="icon-btn"
@@ -358,116 +627,220 @@ function App() {
           </div>
         </header>
 
-        <p className="sub">
-          Strip EXIF metadata (location, camera info, etc.) from JPEG, PNG, WebP - fully
-          offline, no server.
-        </p>
-
-        <div
-          className="drop-zone"
-          role="button"
-          tabIndex="0"
-          onClick={() => fileInputRef.current?.click()}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') fileInputRef.current?.click()
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => {
-            event.preventDefault()
-            addFiles(event.dataTransfer.files)
-          }}
-        >
-          <span>Drop images here or click to browse</span>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="image/jpeg,image/png,image/webp,image/avif"
-            hidden
-            onChange={(event) => {
-              addFiles(event.target.files)
-              event.target.value = ''
+        {!hasFiles ? (
+          <section
+            className={`drop-zone ${isDragging ? 'drag-over' : ''}`}
+            role="button"
+            tabIndex="0"
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') fileInputRef.current?.click()
             }}
-          />
-        </div>
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              dragCounter.current = 0
+              setIsDragging(false)
+              addFiles(event.dataTransfer.files)
+            }}
+          >
+            <div className="drop-icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            </div>
+            <div className="drop-title">Drop images here or click to browse</div>
+            <div className="drop-sub">JPEG · PNG · WebP · AVIF</div>
+          </section>
+        ) : (
+          <section className={`workspace ${isDragging ? 'drag-over' : ''}`}>
+            <div
+              className="preview-panel"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault()
+                dragCounter.current = 0
+                setIsDragging(false)
+                addFiles(event.dataTransfer.files)
+              }}
+            >
+              <section className="stats-row" aria-label="Batch summary">
+                <div className="stat">
+                  <span className="stat-label">Files</span>
+                  <span className="stat-value">
+                    {stats.doneCount}/{files.length}
+                  </span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Original</span>
+                  <span className="stat-value">{formatSize(stats.totalOrig)}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Cleaned</span>
+                  <span className="stat-value">
+                    {stats.doneCount ? formatSize(stats.totalClean) : '—'}
+                  </span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">{reduction >= 0 ? 'Reduction' : 'Change'}</span>
+                  <span className={`stat-value ${reduction >= 0 ? 'accent' : 'grew'}`}>
+                    {stats.doneCount
+                      ? reduction >= 0
+                        ? `-${reduction}%`
+                        : `+${Math.abs(reduction)}%`
+                      : '—'}
+                  </span>
+                </div>
+              </section>
 
-        <div className="files">
-          {files.map((item) => {
-            const reduction =
-              item.status === 'done' && item.originalSize > 0
-                ? Math.round((1 - item.cleanedSize / item.originalSize) * 100)
-                : 0
+              <div className="preview-stage">
+                {activeUrl ? (
+                  <img
+                    src={activeUrl}
+                    alt=""
+                    onClick={() => setPreviewSource(activePreviewSource)}
+                  />
+                ) : null}
 
-            return (
-              <article className="file-card" key={item.id}>
-                <Thumb item={item} onClick={() => setPreviewItem(item)} />
-                <div className="file-info">
-                  <div className="file-name">{item.file.name}</div>
-                  <div className="file-meta">
-                    {formatSize(item.originalSize)}
-                    {item.status === 'done'
-                      ? ` -> ${formatSize(item.cleanedSize)} (${reduction}% smaller)`
-                      : ''}
+                {activeItem ? (
+                  <div className="stage-overlay-tl" aria-hidden="false">
+                    <div className="stage-name" title={activeItem.file.name}>
+                      {activeItem.file.name}
+                    </div>
+                    <div className="stage-meta">
+                      <span>{formatSize(activeItem.originalSize)}</span>
+                      {activeItem.status === 'done' ? (
+                        <>
+                          <span className="meta-arrow">→</span>
+                          <span>{formatSize(activeItem.cleanedSize)}</span>
+                          <span className={`meta-pill ${activeGrew ? 'grew' : ''}`}>
+                            {activeGrew
+                              ? `+${Math.abs(activeReduction)}%`
+                              : `-${activeReduction}%`}
+                          </span>
+                        </>
+                      ) : null}
+                    </div>
                   </div>
-                  {item.status === 'processing' ? (
-                    <div className="progress-bar">
-                      <div className="progress-fill processing" />
-                    </div>
-                  ) : null}
-                  {item.status === 'done' ? (
-                    <div className="progress-bar">
-                      <div className="progress-fill done" />
-                    </div>
-                  ) : null}
+                ) : null}
+
+                {activeItem ? (
+                  <div className="stage-overlay-tr">
+                    <StatusPill status={activeItem.status} />
+                    <button
+                      className="stage-close"
+                      type="button"
+                      onClick={() => removeItem(activeItem.id)}
+                      title="Remove image"
+                      aria-label="Remove image"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
+
+                {files.length > 1 ? (
+                  <>
+                    <button
+                      className="nav-btn prev"
+                      type="button"
+                      onClick={goPrev}
+                      disabled={activeIndex <= 0}
+                      aria-label="Previous image"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="15 18 9 12 15 6" />
+                      </svg>
+                    </button>
+                    <button
+                      className="nav-btn next"
+                      type="button"
+                      onClick={goNext}
+                      disabled={activeIndex >= files.length - 1}
+                      aria-label="Next image"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </>
+                ) : null}
+
+                <div className="stage-thumbstrip" aria-label="Image navigation">
+                  <div className="thumbstrip-scroller">
+                    {files.map((item) => (
+                      <Thumb
+                        key={item.id}
+                        file={item.file}
+                        active={item.id === activeId}
+                        onClick={() => setActiveId(item.id)}
+                        onRemove={() => removeItem(item.id)}
+                      />
+                    ))}
+                    <button
+                      className="thumb-add"
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      title="Add more images"
+                      aria-label="Add more images"
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
-                <div className={`file-status ${item.status}`}>
-                  {item.status === 'pending'
-                    ? 'Waiting'
-                    : item.status === 'processing'
-                      ? 'Processing...'
-                      : item.status === 'done'
-                        ? 'Done'
-                        : 'Error'}
-                </div>
+              </div>
+
+              <div className="preview-actions">
                 <button
-                  className="btn-dl"
+                  className="btn-primary"
                   type="button"
-                  disabled={item.status !== 'done'}
-                  onClick={() => downloadSingle(item)}
+                  disabled={
+                    !activeItem ||
+                    activeItem.status === 'done' ||
+                    activeItem.status === 'processing' ||
+                    processingId != null
+                  }
+                  onClick={() => activeItem && processOne(activeItem.id)}
+                >
+                  {activeItem?.status === 'processing'
+                    ? 'Processing...'
+                    : activeItem?.status === 'done'
+                      ? 'Cleaned'
+                      : 'Process'}
+                </button>
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  disabled={!activeItem || activeItem.status !== 'done'}
+                  onClick={() => downloadSingle(activeItem)}
                 >
                   Download
                 </button>
-              </article>
-            )
-          })}
-        </div>
+              </div>
+            </div>
 
-        <div className="summary">{summary}</div>
+            <ExifPanel item={activeItem} cacheRef={exifCacheRef} />
+          </section>
+        )}
 
-        {hasFiles ? (
-          <div className="actions">
-            <button className="btn-primary" type="button" disabled={!canProcess} onClick={processAll}>
-              {isProcessing ? 'Processing...' : 'Process All'}
-            </button>
-            <button
-              className="btn-secondary"
-              type="button"
-              disabled={!canDownload}
-              onClick={downloadZip}
-            >
-              {isZipping ? 'Creating ZIP...' : 'Download ZIP'}
-            </button>
-            <button className="btn-secondary" type="button" onClick={clearAll}>
-              Clear
-            </button>
-          </div>
-        ) : null}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/jpeg,image/png,image/webp,image/avif"
+          hidden
+          onChange={(event) => {
+            addFiles(event.target.files)
+            event.target.value = ''
+          }}
+        />
 
         <footer className="site-footer">
           <div className="privacy">
-            <strong>100% Private &amp; Offline</strong> - Your photos never leave your device. All
-            processing happens entirely in your browser with zero server communication. No uploads,
-            no cloud, no tracking. Works offline.
+            <strong>100% Private &amp; Offline.</strong> Photos never leave your device. All
+            processing happens in your browser. No uploads, no tracking, works offline.
           </div>
           <a className="footer-link" href={buildHref} target="_blank" rel="noopener noreferrer">
             <span>Build</span>
@@ -476,7 +849,35 @@ function App() {
         </footer>
       </main>
 
-      {previewItem ? <Preview item={previewItem} onClose={() => setPreviewItem(null)} /> : null}
+      {hasFiles ? (
+        <div className="action-bar" role="toolbar" aria-label="Batch actions">
+          <div className="action-bar-inner">
+            <button
+              className="btn-primary"
+              type="button"
+              disabled={!canProcessBatch}
+              onClick={processAll}
+            >
+              {isProcessing ? 'Processing...' : allDone ? 'All Cleaned' : 'Process All'}
+            </button>
+            <button
+              className="btn-secondary"
+              type="button"
+              disabled={!canDownloadZip}
+              onClick={downloadZip}
+            >
+              {isZipping ? 'Creating ZIP...' : 'Download ZIP'}
+            </button>
+            <button className="btn-ghost" type="button" onClick={clearAll}>
+              Clear all
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {previewSource ? (
+        <PreviewOverlay source={previewSource} onClose={() => setPreviewSource(null)} />
+      ) : null}
     </>
   )
 }

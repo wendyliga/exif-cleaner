@@ -2,16 +2,18 @@
 
 ## Project Overview
 
-Static React + Vite web app that strips EXIF metadata (GPS, camera info, timestamps, etc.) from images entirely in the browser. No backend and no server-side processing.
+Static React + Vite web app that strips EXIF metadata (GPS, camera info, timestamps, etc.) from images entirely in the browser. Also lets users inspect existing EXIF metadata before stripping. No backend and no server-side processing.
 
 **Architecture**:
 
 - `index.html`: Vite HTML entry and metadata
 - `src/main.jsx`: React mount entry
-- `src/App.jsx`: App state, IndexedDB persistence, EXIF stripping, preview, download flow
+- `src/App.jsx`: App state, IndexedDB persistence, EXIF stripping, preview, EXIF viewer, download flow
 - `src/App.css`: Theme tokens and UI styles
 - `src/core/buildInfo.js`: Build hash/repository metadata from Vite env vars
+- `src/core/exif.js`: EXIF read/parse wrapper around `exifr`, plus grouping into Camera / Exposure / Image / Date & Time / Location / Other categories for the viewer
 - `public/favicon.svg`: Static favicon copied into `dist/`
+- `sample/`: Test images with real EXIF metadata. See [Testing](#testing).
 - `build.sh`: Cloudflare/static hosting production build wrapper
 
 **How EXIF stripping works**: Images are drawn onto an offscreen `<canvas>` then re-exported via `canvas.toBlob()`. Canvas does not preserve EXIF metadata, so the output is clean. This is lossy (re-encoded) but simple and works for all canvas-supported formats.
@@ -31,6 +33,17 @@ npm run preview
 `build.sh` mirrors the Converter project pattern: install dependencies if `node_modules` is missing, compute `VITE_GITHUB_REPO_URL`, `VITE_BUILD_COMMIT`, and `VITE_BUILD_COMMIT_SHORT`, then run `npm run build:site -- "$@"`.
 
 Cloudflare Pages output directory is `dist/` through `wrangler.jsonc`.
+
+## Testing
+
+The `sample/` directory holds real-world images with intact EXIF metadata. Use these when testing the EXIF viewer, stripping flow, or size-reduction stats — the app has no automated test suite, so these are the reference inputs for manual verification.
+
+**Do not modify, overwrite, or re-encode files in `sample/`.** They are the source of truth for reproducing EXIF-related behavior; stripping their metadata in place would silently invalidate every future test. Copy them elsewhere if you need a scratch version.
+
+Current samples:
+
+- `sample/0bs1zdxbgx8nhs8kf01aeehmm0.jpg` (Sony ILCE-7M2, GPS + full EXIF)
+- `sample/23xxesym0e9w18z2904frnpgy7.jpg`
 
 ## Code Style
 
@@ -74,7 +87,7 @@ Object store `files`, keyPath: `id`
 ## Security
 
 - **No server communication**: All processing is client-side. Runtime app has no uploads, analytics, tracking, or API calls.
-- **Dependency note**: JSZip is bundled through npm/Vite rather than loaded from a CDN at runtime.
+- **Dependency note**: JSZip and `exifr` are bundled through npm/Vite rather than loaded from a CDN at runtime.
 - **XSS note**: React escapes file names by default. If adding raw HTML later, sanitize user-controlled strings first.
 - **URL.createObjectURL lifecycle**: Always call `URL.revokeObjectURL()` after use (in `stripExif`, previews, thumbnails, `downloadSingle`, `downloadZip`) to prevent memory leaks.
 
